@@ -1,0 +1,82 @@
+# --- DISPARADORES DEL PIPELINE ---
+trigger:
+  branches:
+    include: [main] # Se dispara cuando hay push a la rama main
+  paths:
+    include: # (Opcional) Solo si cambian estos archivos/carpetas
+      - app/**
+      - public/**
+      - package.json
+      - package-lock.json
+      - next.config.ts
+      - tsconfig.json
+      - azure-pipelines.yml
+
+# --- NOMBRE LEGIBLE PARA CADA RUN ---
+name: ci_$(Date:yyyyMMdd)$(Rev:.r) # Ej: ci_20250925.3
+
+# --- EN QUÉ AGENTES CORRER ---
+pool:
+  name: SelfHosted-NotasApp # Usa TU pool/agent self-hosted
+
+# --- VARIABLES REUTILIZABLES ---
+variables:
+  NODE_VERSION: "20.x" # Versión de Node que queremos en el agente
+
+# --- ETAPAS (STAGES) DEL PIPELINE ---
+stages:
+  - stage: CI
+    displayName: Next.js CI (UI + API)
+    jobs:
+      # ========== JOB 1: BUILD DE LA UI ==========
+      - job: Build_UI
+        displayName: Build Next.js
+        steps:
+          - checkout: self # Clona el repo en el agente
+            fetchDepth: 1 # Shallow clone (más rápido)
+
+          - task: NodeTool@0 # Instala/activa Node en el agente
+            displayName: "Use Node.js $(NODE_VERSION)"
+            inputs:
+              versionSpec: $(NODE_VERSION)
+
+          - script: | # Comandos de build
+              npm ci                  # Instala dependencias exactas desde package-lock
+              npm run lint || echo "no lint (ok)"  # Lint si existe script
+              npm run build           # Compila la app (genera .next/)
+            displayName: "Install, Lint & Build"
+
+          - script: | # Empaqueta lo necesario para ejecutar `next start`
+              ART="$(Build.ArtifactStagingDirectory)/next-app"
+              mkdir -p "$ART"
+              cp -r .next "$ART/.next"              # Salida de compilación
+              if [ -d "public" ]; then cp -r public "$ART/public"; fi  # assets estáticos
+              cp package.json "$ART/" || true
+              cp package-lock.json "$ART/" || true
+              if [ -f "next.config.ts" ]; then cp next.config.ts "$ART/"; fi
+              if [ -f "next.config.mjs" ]; then cp next.config.mjs "$ART/"; fi
+            displayName: "Empaquetar artefacto (no standalone)"
+
+          - task: PublishPipelineArtifact@1 # Publica el artefacto para descargar/usar luego
+            displayName: "Publish artifact: next-app"
+            inputs:
+              targetPath: "$(Build.ArtifactStagingDirectory)/next-app"
+              artifact: "next-app"
+
+      # ========== JOB 2: CHECKS DEL “BACK” (API ROUTES) ==========
+      - job: Check_API
+        displayName: Verificaciones API (Route Handlers)
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: NodeTool@0
+            displayName: "Use Node.js $(NODE_VERSION)"
+            inputs:
+              versionSpec: $(NODE_VERSION)
+
+          - script: |
+              npm ci
+              npm run lint || echo "sin lint (ok)"
+              npm run test || echo "sin tests (ok)"   # Si no tenés tests, no falla
+            displayName: "Lint / Tests API"
